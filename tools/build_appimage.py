@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -112,6 +113,16 @@ def main() -> int:
     executable = Path(sys.executable).resolve()
     shutil.copy2(executable, APPDIR / "usr/bin" / executable.name)
     (APPDIR / "usr/bin/python3").symlink_to(executable.name)
+    # Интерпретатор может быть динамически слинкован с libpython. Без неё
+    # AppImage не запустится на системах, где нет именно этой версии Python.
+    libdir = Path(sysconfig.get_config_var("LIBDIR") or "")
+    for name in {
+        sysconfig.get_config_var("INSTSONAME"),
+        sysconfig.get_config_var("LDLIBRARY"),
+    } - {None}:
+        candidate = libdir / str(name)
+        if candidate.exists():
+            shutil.copy2(candidate.resolve(), APPDIR / "usr/lib" / candidate.name)
     shutil.copytree(
         PY_STDLIB, APPDIR / "usr/lib" / PY_VERSION,
         ignore=ignored_stdlib, symlinks=True,
