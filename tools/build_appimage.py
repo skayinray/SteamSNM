@@ -153,6 +153,20 @@ def main() -> int:
         ignore=shutil.ignore_patterns("__pycache__"),
         dirs_exist_ok=True,
     )
+    # CA-сертификаты: bundled Python внутри AppImage не видит системные пути
+    # (/usr/lib/ssl/...), поэтому HTTPS-запросы к Steam API падали с
+    # CERTIFICATE_VERIFY_FAILED. Кладём бандл внутрь образа.
+    ca_bundle = APPDIR / "usr/share/steamsnm/ca-bundle.crt"
+    for pattern in (
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+    ):
+        source = Path(pattern)
+        if source.is_file():
+            shutil.copy2(source.resolve(), ca_bundle)
+            break
+
     icon = ROOT / "src/resources/icon.png"
     icon_dst = APPDIR / "usr/share/icons/hicolor/256x256/apps/steamsnm.png"
     icon_dst.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +202,12 @@ export QT_PLUGIN_PATH="$APPDIR/usr/lib/qt/plugins"
 export QT_QPA_PLATFORM_PLUGIN_PATH="$APPDIR/usr/lib/qt/plugins/platforms"
 export PYTHONPATH="$APPDIR/usr/lib/{PY_VERSION}/site-packages"
 export XDG_DATA_DIRS="$APPDIR/usr/share:${{XDG_DATA_DIRS:-/usr/local/share:/usr/share}}"
+# Ограничиваем число glibc-арен: Qt создаёт много мелких аллокаций, и без этого
+# RSS приложения в фоне раздувается на десятки МБ.
+export MALLOC_ARENA_MAX=2
+if [ -f "$APPDIR/usr/share/steamsnm/ca-bundle.crt" ]; then
+    export SSL_CERT_FILE="$APPDIR/usr/share/steamsnm/ca-bundle.crt"
+fi
 exec "$APPDIR/usr/bin/{executable.name}" "$APPDIR/usr/share/steamsnm/src/main.py" "$@"
 """
     apprun_path = APPDIR / "AppRun"

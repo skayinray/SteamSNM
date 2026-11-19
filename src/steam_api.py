@@ -8,15 +8,46 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
+import ssl
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 USER_AGENT = "SteamSNM/1.0 (desktop client; Steam Store API)"
+
+# В AppImage системные CA-сертификаты не видны bundled Python, поэтому он
+# падает с CERTIFICATE_VERIFY_FAILED. Бандл кладётся в образ сборщиком.
+_CA_CANDIDATES = (
+    "$APPDIR/usr/share/steamsnm/ca-bundle.crt",
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+)
+
+
+_SSL_CONTEXT: ssl.SSLContext | None = None
+
+
+def _ssl_context() -> ssl.SSLContext | None:
+    """SSL-контекст с CA-бандлом, доступным и в AppImage, и в системе."""
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is not None:
+        return _SSL_CONTEXT
+    for pattern in _CA_CANDIDATES:
+        path = Path(os.path.expandvars(pattern))
+        if path.is_file():
+            try:
+                _SSL_CONTEXT = ssl.create_default_context(cafile=str(path))
+                return _SSL_CONTEXT
+            except (OSError, ssl.SSLError):
+                continue
+    return None
 
 FILTERS = "basic,price_overview,release_date,genres,recommendations"
 
@@ -105,7 +136,9 @@ def get_json(url: str, timeout: int = 20, retries: int = 2) -> Any:
                     "Accept-Language": "en",
                 },
             )
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            context = _ssl_context()
+            kwargs = {"context": context} if context is not None else {}
+            with urllib.request.urlopen(request, timeout=timeout, **kwargs) as response:
                 payload = _decode(response.read())
             try:
                 return json.loads(payload)

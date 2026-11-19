@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ctypes
 import html
 import math
 import os
 import re
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCharts import QChart, QChartView, QDateTimeAxis, QLineSeries, QValueAxis
@@ -68,6 +70,14 @@ def plain_text(value: str) -> str:
     return " ".join(html.unescape(text).split())
 
 
+def trim_memory() -> None:
+    """Вернуть glibc свободные страницы ОС (долгая работа в трее)."""
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass  # не Linux или другая libc — просто игнорируем
+
+
 class SortItem(QTableWidgetItem):
     """Элемент таблицы с числовой сортировкой."""
 
@@ -82,13 +92,21 @@ class SortItem(QTableWidgetItem):
 
 
 class ImageLoader(QObject):
-    """Асинхронная загрузка изображений с кэшем."""
+    """Асинхронная загрузка изображений с ограниченным LRU-кэшем.
+
+    Полноразмерные обложки Steam весят по 200-500 КБ. Без жёсткого лимита
+    кэш неограниченно рос при листании каталога — приложение «съедало»
+    сотни МБ и плохо подходило для постоянной работы в трее.
+    """
+
+    MAX_CACHE = 48
+    MAX_PIXMAP_SIDE = 900
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._manager = QNetworkAccessManager(self)
         self._manager.finished.connect(self._finished)
-        self._cache: dict[str, QPixmap] = {}
+        self._cache: OrderedDict[str, QPixmap] = OrderedDict()
         self._callbacks: dict[str, list] = {}
 
     def load(self, url: str, callback) -> None:
@@ -96,6 +114,7 @@ class ImageLoader(QObject):
             return
         pixmap = self._cache.get(url)
         if pixmap is not None:
+            self._cache.move_to_end(url)
             callback(pixmap)
             return
         if url in self._callbacks:
@@ -115,13 +134,29 @@ class ImageLoader(QObject):
         data = bytes(reply.readAll())
         pixmap = QPixmap()
         if data and pixmap.loadFromData(data):
+            # Храним уменьшенную копию: для таблицы (120x45), скриншотов
+            # (174x82) и баннера (до ~800px) этого более чем достаточно.
+            if pixmap.width() > self.MAX_PIXMAP_SIDE or pixmap.height() > self.MAX_PIXMAP_SIDE:
+                pixmap = pixmap.scaled(
+                    self.MAX_PIXMAP_SIDE, self.MAX_PIXMAP_SIDE,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             self._cache[url] = pixmap
+            self._cache.move_to_end(url)
+            while len(self._cache) > self.MAX_CACHE:
+                self._cache.popitem(last=False)
         for callback in self._callbacks.pop(url, []):
             try:
                 callback(pixmap)
             except (RuntimeError, TypeError):
                 pass
         reply.deleteLater()
+
+    def clear(self) -> None:
+        """Освободить память картинок (при уходе в трей/ выходе)."""
+        self._cache.clear()
+        self._callbacks.clear()
 
 
 SECTION_LABELS = {
@@ -431,8 +466,8 @@ class MainWindow(QMainWindow):
         self.global_api = SteamAPI("us", "english")
 
         self.games: dict[int, GameInfo] = {}
-        self.detail_cache: dict[int, dict] = {}
-        self.bulk_games: list[dict] = []
+        # Полные JSON страниц игр тяжёлые — держим только недавно открытые.
+        self.detail_cache: OrderedDict[int, dict] = OrderedDict()
         self.page_stack: list[GamePage] = []
         self.page = 0
         self.row_appids: list[int] = []
@@ -449,7 +484,6 @@ class MainWindow(QMainWindow):
 
         cached = self.cache.load()
         if cached:
-            self.bulk_games = cached
             for item in cached:
                 try:
                     appid = int(item["appid"])
@@ -786,25 +820,30 @@ class MainWindow(QMainWindow):
             if isValid(page):
                 page.render()
 
+    def _save_catalog_cache(self) -> None:
+        """Сохранить каталог из основного словаря, не дублируя его в памяти."""
+        self.cache.save(
+            {"appid": game.appid, "name": game.name, "image": game.image}
+            for game in self.games.values() if game.section == "catalog"
+        )
+
     def _on_bulk_batch(self, games: list[GameInfo]) -> None:
         for game in games:
-            self.bulk_games.append({
-                "appid": game.appid, "name": game.name, "image": game.image,
-            })
             self.games.setdefault(game.appid, game)
 
     def _on_bulk_progress(self, pages: int, total: int) -> None:
         self.bulk_label.setText(f"Каталог: {total:,}".replace(",", " "))
         self.status.showMessage(f"Загружено страниц каталога: {pages} • Игр: {total}")
         if pages % 10 == 0:
-            self.cache.save(self.bulk_games)
+            self._save_catalog_cache()
             self.refresh_table()
 
     def _on_bulk_completed(self, total: int) -> None:
-        self.cache.save(self.bulk_games)
+        self._save_catalog_cache()
         self.bulk_label.setText(f"Каталог: {total:,}".replace(",", " "))
         self.status.showMessage(f"Каталог Steam загружен: {total} игр.")
         self.refresh_table()
+        trim_memory()
 
     def _on_bulk_failed(self, message: str) -> None:
         self.bulk_label.setText("Каталог: частично")
@@ -1072,6 +1111,9 @@ class MainWindow(QMainWindow):
 
         def done(data: dict) -> None:
             self.detail_cache[appid] = data or {}
+            self.detail_cache.move_to_end(appid)
+            while len(self.detail_cache) > 24:
+                self.detail_cache.popitem(last=False)
             parsed = self.api.parse_details(appid, data or {})
             if parsed is not None and appid in self.games:
                 current = self.games[appid]
@@ -1212,6 +1254,8 @@ class MainWindow(QMainWindow):
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
             if self.isVisible():
                 self.hide()
+                self.images.clear()
+                trim_memory()
             else:
                 self._show_window()
 
@@ -1239,12 +1283,16 @@ class MainWindow(QMainWindow):
         ):
             event.ignore()
             self.hide()
+            # В трее нет таблицы — кэш обложек не нужен, а весит десятки МБ.
+            self.images.clear()
+            trim_memory()
             self.tray.showMessage(
                 "SteamSNM", "Приложение свернуто в трей.",
                 QSystemTrayIcon.MessageIcon.Information, 3000,
             )
             return
         self.page_stack.clear()
+        self.images.clear()
         self._stop_workers()
         self.store.close()
         event.accept()
