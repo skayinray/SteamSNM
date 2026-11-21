@@ -6,7 +6,8 @@ import time
 
 from PySide6.QtCore import QThread, Signal
 
-from steam_api import FeaturedItem, GameInfo, SteamAPI, SteamAPIError, format_money
+from notifications import notification_messages
+from steam_api import FeaturedItem, GameInfo, SteamAPI, SteamAPIError
 from storage import CatalogCache, Settings, Store, Watchlist
 
 
@@ -104,50 +105,7 @@ class MonitorWorker(QThread):
             self.failed.emit(str(exc))
 
     def _compare(self, game: GameInfo, previous: dict | None, entry: dict) -> list[str]:
-        messages: list[str] = []
-        if not previous:
-            return messages
-
-        old_price = previous.get("price")
-        old_discount = int(previous.get("discount") or 0)
-        currency = game.currency
-        name = game.name
-
-        if (
-            self.settings.get("notify_discounts")
-            and game.discount > 0
-            and game.discount > old_discount
-        ):
-            messages.append(
-                f"🔥 {name}: скидка {game.discount}% — {game.formatted_price}"
-            )
-
-        if (
-            self.settings.get("notify_price_drop")
-            and old_price is not None
-            and game.price is not None
-            and game.price < old_price
-            and game.discount == old_discount
-        ):
-            messages.append(
-                f"📉 {name}: цена {format_money(old_price, currency)} → {game.formatted_price}"
-            )
-
-        target = entry.get("target_price")
-        if (
-            self.settings.get("notify_target")
-            and target is not None
-            and game.price is not None
-            and game.price <= int(target)
-            and (old_price is None or old_price > int(target))
-        ):
-            messages.append(
-                f"🎯 {name}: достигнута целевая цена {game.formatted_price}"
-            )
-
-        if game.free and not previous.get("price") == 0:
-            messages.append(f"🆓 {name}: игра стала бесплатной")
-        return messages
+        return notification_messages(game, previous, entry, self.settings)
 
 
 class CatalogWorker(QThread):

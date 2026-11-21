@@ -1,4 +1,4 @@
-name: Build SteamSNM (Linux + Windows)
+name: Build and sign SteamSNM (Linux + Windows)
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Тег релиза, куда загрузить сборки'
+        description: 'Release tag to upload builds to'
         required: false
         default: 'v1.0.0'
 
@@ -16,6 +16,9 @@ permissions:
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  APPIMAGETOOL_VERSION: '1.9.1'
+  APPIMAGETOOL_SHA256: 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0'
+  PYINSTALLER_VERSION: '6.22.3'
 
 jobs:
   linux-appimage:
@@ -38,24 +41,32 @@ jobs:
       - name: Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: appimagetool
+      - name: Download pinned appimagetool
         run: |
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O /tmp/appimagetool.AppImage
+          curl -fL --retry 3 -o /tmp/appimagetool.AppImage \
+            "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-x86_64.AppImage"
+          echo "${APPIMAGETOOL_SHA256}  /tmp/appimagetool.AppImage" | sha256sum -c -
           chmod +x /tmp/appimagetool.AppImage
-          echo "APPIMAGETOOL=/tmp/appimagetool.AppImage" >> "$GITHUB_ENV"
 
       - name: Build AppImage
-        run: python tools/build_appimage.py "$APPIMAGETOOL"
+        run: python tools/build_appimage.py /tmp/appimagetool.AppImage
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Sign release asset and write checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: python tools/sign_release.py sign SteamSNM-x86_64.AppImage
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          overwrite_files: true
-          fail_on_unmatched_files: true
-          files: SteamSNM-x86_64.AppImage
+          name: linux-release
+          path: |
+            SteamSNM-x86_64.AppImage
+            SteamSNM-x86_64.AppImage.sig
+            SHA256SUMS
+          if-no-files-found: error
 
   windows-exe:
     name: Windows (portable .exe)
@@ -70,10 +81,57 @@ jobs:
       - name: Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pyinstaller
+          python -m pip install -r requirements.txt -r requirements-dev.txt pyinstaller==${{ env.PYINSTALLER_VERSION }}
 
       - name: Build with PyInstaller
         run: pyinstaller SteamSNM.spec --noconfirm
+
+      - name: Sign release asset and write checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: python tools/sign_release.py sign dist/SteamSNM.exe
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            dist/SteamSNM.exe
+            dist/SteamSNM.exe.sig
+            SHA256SUMS
+          if-no-files-found: error
+
+  release:
+    name: Publish signed release assets
+    needs: [linux-appimage, windows-exe]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+          path: release/linux
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release/windows
+
+      - name: Assemble release assets
+        run: |
+          mkdir -p release/assets
+          cp release/linux/SteamSNM-x86_64.AppImage release/assets/
+          cp release/linux/SteamSNM-x86_64.AppImage.sig release/assets/
+          cp release/windows/SteamSNM.exe release/assets/
+          cp release/windows/SteamSNM.exe.sig release/assets/
+          cat release/linux/SHA256SUMS release/windows/SHA256SUMS | LC_ALL=C sort -k2 > release/assets/SHA256SUMS
+          cat release/assets/SHA256SUMS
+
+      - name: Sign combined checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: python tools/sign_release.py sign-only release/assets/SHA256SUMS
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
@@ -81,4 +139,10 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG }}
           overwrite_files: true
           fail_on_unmatched_files: true
-          files: dist/SteamSNM.exe
+          files: |
+            release/assets/SteamSNM-x86_64.AppImage
+            release/assets/SteamSNM-x86_64.AppImage.sig
+            release/assets/SteamSNM.exe
+            release/assets/SteamSNM.exe.sig
+            release/assets/SHA256SUMS
+            release/assets/SHA256SUMS.sig

@@ -4,17 +4,17 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
   <name>SteamSNM</name>
-  <summary>Мониторинг цен, скидок и онлайна игр Steam</summary>
+  <summary>Desktop monitor for Steam prices, discounts, and player counts</summary>
   <developer_name>skayinray</developer_name>
-  <url type="homepage">https://github.com/skayinray</url>
+  <url type="homepage">https://github.com/skayinray/SteamSNM</url>
   <description>
     <p>
-      SteamSNM — десктопный клиент для слежения за играми в Steam: цены, скидки,
-      текущий онлайн игроков, новые релизы, история цен и уведомления.
+      SteamSNM is an independent desktop client for tracking Steam games: prices,
+      discounts, current player counts, new releases, price history, and notifications.
     </p>
     <p>
-      Данные получаются из официальных публичных Steam Store API и Steam Web API.
-      Приложение не использует и не парсит SteamDB.
+      Data comes from the official public Steam Store API and Steam Web API.
+      The application does not use or scrape SteamDB.
     </p>
   </description>
   <launchable type="desktop-id">SteamSNM.desktop</launchable>
@@ -28,7 +28,7 @@
   <content_rating type="oars-1.1"/>
   <releases>
     <release version="1.0" date="2026-11-19">
-      <description><p>Первый выпуск: мониторинг цен, скидок, онлайна и новинок.</p></description>
+      <description><p>First release: price, discount, player count, and new release monitoring.</p></description>
     </release>
   </releases>
 </component>
